@@ -4,7 +4,7 @@ from setuptools import find_packages, setup
 with open(Path(__file__).absolute().parents[0] / "opentune" / "VERSION") as _f:
     __version__ = _f.read().strip()
 
-with open("app/README.md", "r") as f:
+with open("README.md", "r") as f:
     long_description = f.read()
 
 setup(
@@ -15,8 +15,8 @@ setup(
     packages=find_packages(where="opentune"),
     long_description=long_description,
     long_description_content_type="text/markdown",
-    url="https://github.com/lilinwang/opentune",
-    author="Evaly",
+    url="https://github.com/tigerrag/tiger",
+    author="TigerRag",
     author_email="lw555@cornell.edu",
     license="MIT",
     classifiers=[

@@ -62,7 +62,13 @@ class TextGenerationTransformersFinetuneEngine(BaseLLMFinetuneEngine):
         self.base_model_id = base_model_id
 
         def formatting_func(example):
-            text = f"### Question: {example['input']}\n ### Answer: {example['output']}"
+            output_texts = []
+            for i in range(len(example['input'])):
+                text = f"<s>[INST] {example['input'][i]}\n [/INST] {example['output'][i]}"
+                if base_model_id == "tiiuae/falcon-7b":
+                    text = f"### Human: {example['input'][i]} ### Assistant: {example['output'][i]}"
+                output_texts.append(text)
+            return output_texts
 
         ################################################################################
         # QLoRA parameters
@@ -99,6 +105,8 @@ class TextGenerationTransformersFinetuneEngine(BaseLLMFinetuneEngine):
 
         # Number of training epochs
         num_train_epochs = 1
+        if hyperparameters is not None and hyperparameters.num_train_epochs is not None:
+            num_train_epochs = hyperparameters.num_train_epochs
 
         # Enable fp16/bf16
         fp16 = False
@@ -113,36 +121,39 @@ class TextGenerationTransformersFinetuneEngine(BaseLLMFinetuneEngine):
         # Number of update steps to accumulate the gradients for
         gradient_accumulation_steps = 1
 
-        # # Enable gradient checkpointing
-        # gradient_checkpointing = True
-
         # Maximum gradient normal (gradient clipping)
         max_grad_norm = 0.3
 
         # Weight decay to apply to all layers except bias/LayerNorm weights
         weight_decay = 0.001
+        if hyperparameters is not None and hyperparameters.weight_decay is not None:
+            weight_decay = hyperparameters.weight_decay
 
         # Optimizer to use
         optim = "paged_adamw_32bit"
 
         # Initial learning rate (AdamW optimizer)
         learning_rate = 2e-4
+        if hyperparameters is not None and hyperparameters.learning_rate is not None:
+            learning_rate = hyperparameters.learning_rate
 
         # Learning rate schedule
         lr_scheduler_type = "cosine"
 
         # Number of training steps (overrides num_train_epochs)
-        max_steps = 5
+        max_steps = -1
 
         # Ratio of steps for a linear warmup (from 0 to learning rate)
         warmup_ratio = 0.03
+        if hyperparameters is not None and hyperparameters.warmup_ratio is not None:
+            warmup_ratio = hyperparameters.warmup_ratio
 
         # Group sequences into batches with same length
         # Saves memory and speeds up training considerably
         group_by_length = True
 
         # Save checkpoint every X updates steps
-        save_steps = 50
+        save_steps = 0
 
         # Log every X updates steps
         logging_steps = 50
@@ -151,14 +162,14 @@ class TextGenerationTransformersFinetuneEngine(BaseLLMFinetuneEngine):
         do_eval = True
 
         # Directory for storing logs
-        logging_dir = "./logs",
+        logging_dir = "logs"
 
         # Save the model checkpoint every logging step
-        save_strategy = "steps",
-        evaluation_strategy = "steps",
+        save_strategy = "steps"
+        evaluation_strategy = "steps"
 
         # Evaluate and save checkpoints every 50 steps
-        eval_steps: int = 50,
+        eval_steps = 50
 
         ################################################################################
         # SFT parameters
@@ -181,20 +192,23 @@ class TextGenerationTransformersFinetuneEngine(BaseLLMFinetuneEngine):
 
         # Check GPU compatibility with bfloat16
         if compute_dtype == torch.float16 and use_4bit:
-            major, _ = torch.cuda.get_device_capability()
-            if major >= 8:
-                bf16 = True
-
-        if device is None:
-            device = "cuda" if torch.cuda.is_available() else "cpu"
-            # logger.info("Use pytorch device: {}".format(device))
-        self._target_device = torch.device(device)
+            # Check if CUDA (GPU) is available
+            if torch.cuda.is_available():
+                print("CUDA is available.")
+                major, _ = torch.cuda.get_device_capability()
+                if major >= 8:
+                    bf16 = True
+            else:
+                print("CUDA is not available.")
 
         # Load base model
         self.model = AutoModelForCausalLM.from_pretrained(
             base_model_id,
             quantization_config=bnb_config,
-            device_map="auto"
+            # torch_dtype=torch.float32,
+            # offload_folder="offload",
+            # offload_state_dict=True,
+            device_map={"": 0}
         )
         self.model.config.use_cache = False
 
@@ -215,33 +229,35 @@ class TextGenerationTransformersFinetuneEngine(BaseLLMFinetuneEngine):
             bias="none",
             task_type="CAUSAL_LM",
         )
+        if hyperparameters is not None and hyperparameters.peft_config is not None:
+            peft_config = hyperparameters.peft_config
 
         # Set training parameters
         training_arguments = TrainingArguments(
             output_dir=model_output_path,
-            num_train_epochs=hyperparameters.epochs if hyperparameters.epochs is not None else num_train_epochs,
+            num_train_epochs=num_train_epochs,
             per_device_train_batch_size=per_device_train_batch_size,
             per_device_eval_batch_size=per_device_eval_batch_size,
             gradient_accumulation_steps=gradient_accumulation_steps,
             optim=optim,
-            save_strategy=save_strategy,       # Save the model checkpoint every logging step
+            save_strategy=save_strategy,
             save_steps=save_steps,
-            logging_dir=logging_dir,        # Directory for storing logs
+            logging_dir=logging_dir,
             logging_steps=logging_steps,
-            learning_rate=hyperparameters.learning_rate if hyperparameters.learning_rate is not None else learning_rate,
-            weight_decay=hyperparameters.weight_decay if hyperparameters.weight_decay is not None else weight_decay,
+            learning_rate=learning_rate,
+            weight_decay=weight_decay,
             fp16=fp16,
             bf16=bf16,
             max_grad_norm=max_grad_norm,
             max_steps=max_steps,
-            warmup_ratio=hyperparameters.warmup_ratio if hyperparameters.warmup_ratio is not None else warmup_ratio,
+            warmup_ratio=warmup_ratio,
             group_by_length=group_by_length,
             lr_scheduler_type=lr_scheduler_type,
             # Evaluate the model every logging step
             evaluation_strategy=evaluation_strategy,
             eval_steps=eval_steps,               # Evaluate and save checkpoints every 50 steps
             do_eval=do_eval,                 # Perform evaluation at the end of training
-            # report_to="tensorboard"
+            report_to="tensorboard"
         )
 
         # Set supervised fine-tuning parameters
@@ -249,33 +265,23 @@ class TextGenerationTransformersFinetuneEngine(BaseLLMFinetuneEngine):
             model=self.model,
             train_dataset=train_dataset,
             eval_dataset=eval_dataset,
-            peft_config=hyperparameters.lora_config if hyperparameters.lora_config is not None else peft_config,
+            peft_config=peft_config,  # hyper
             formatting_func=formatting_func,
             tokenizer=tokenizer,
-            dataset_text_field="text",
+            # dataset_text_field="text",
             max_seq_length=max_seq_length,
             args=training_arguments,
             packing=packing,
         )
 
-        self.base_model_reload = AutoModelForCausalLM.from_pretrained(
-            self.base_model_id,
-            low_cpu_mem_usage=True,
-            return_dict=True,
-            torch_dtype=torch.float16,
-            device_map="auto",
-        )
-
-        # Reload tokenizer to save it
-        self.tokenizer_reload = AutoTokenizer.from_pretrained(
-            self.base_model_id, trust_remote_code=True)
-        self.tokenizer_reload.pad_token = tokenizer.eos_token
-        self.tokenizer_reload.padding_side = "right"
-
-        self.peft_model = PeftModel()
-        self.pipeline = pipeline()
+        self.auto_model = AutoModelForCausalLM
+        self.auto_tokenizer = AutoTokenizer
+        self.peft_model = PeftModel
+        self.pipeline = pipeline
+        self.torch = torch
 
         self.output_merged_dir = model_output_path
+        self.base_model_id = base_model_id
 
     def finetune(self, **train_kwargs: Any) -> None:
         """Finetune model."""
@@ -285,21 +291,46 @@ class TextGenerationTransformersFinetuneEngine(BaseLLMFinetuneEngine):
         # Save trained model
         self.trainer.model.save_pretrained(self.output_merged_dir)
 
+        # Empty VRAM
+        del self.model
+        del self.trainer
+        import gc
+        gc.collect()
+        gc.collect()
+
+        base_model = self.auto_model.from_pretrained(
+            self.base_model_id,
+            low_cpu_mem_usage=True,
+            return_dict=True,
+            torch_dtype=self.torch.float16,
+            device_map={"": 0},
+        )
+
         # Load the QLoRA adapter from the new model
         self.model = self.peft_model.from_pretrained(
-            self.base_model_reload, self.output_merged_dir)
+            base_model, self.output_merged_dir)
         self.model = self.model.merge_and_unload()
         self.model.save_pretrained(
             self.output_merged_dir, safe_serialization=True)
 
         # save tokenizer for easy inference
-        self.tokenizer_reload.save_pretrained(self.output_merged_dir)
+        # self.tokenizer_reload.save_pretrained(self.output_merged_dir)
 
     def inference(self, **model_kwargs: Any) -> str:
         """Inference."""
+        # Reload tokenizer to save it
+        tokenizer_reload = self.auto_tokenizer.from_pretrained(
+            self.base_model_id, trust_remote_code=True)
+        tokenizer_reload.pad_token = tokenizer_reload.eos_token
+        tokenizer_reload.padding_side = "right"
+
+        # Run inference
         pipe = self.pipeline(task="text-generation", model=self.model,
-                             tokenizer=self.tokenizer_reload, max_length=200)
-        # result = pipe(f"input: { model_kwargs.prompt}")
-        result = pipe(f"<s>[INST] {model_kwargs.prompt} [/INST]")
+                             tokenizer=tokenizer_reload, max_length=200)
+        base_prompt = model_kwargs["prompt"]
+        prompt = f"<s>[INST] {base_prompt} [/INST]"
+        if self.base_model_id == "tiiuae/falcon-7b":
+            prompt = f"### Human: {model_kwargs.prompt} ### Assistant: "
+        result = pipe(prompt)
         print(result[0]['generated_text'])
         return result[0]['generated_text']
